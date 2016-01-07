@@ -1,57 +1,81 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 import os
 import signal
+import subprocess
 import sys
 import time
 
+from configparser import ConfigParser
+
 class NetMan(object):
-  SCAN_CMD = "iw wlan0 scan | grep SSID"
-  SSIDS = ["2.4G", "eduroam", "RedRover", "Courtyard_GUEST", "FairfieldInn_Guest", "si-visitor", "Fairfield_GUEST", "HolidayInn", "Super 8", "CUAUV-SOFTWARE", "OCH214\\x20", "capri", "SpaceX Guest"]
-  configs = ["home", "eduroam", None, None, None, None, None, None, None, "CUAUV-SOFTWARE", "oakwood", "hotspot", None]
+  IF_UP_CMD = 'ip link set "{iface}" up'
+  SCAN_CMD = 'iw "{iface}" scan | grep SSID'
+  IW_CONNECT_CMD = 'iw {iface} connect "{ssid}"'
+  WPA_CONFIG_CMD = 'wpa_passphrase "{ssid}" "{password}" > "/etc/sysconfig/wpa-{ssid}.conf"'
+  WPA_CONNECT_CMD = 'wpa_supplicant -B -Dnl80211 -i"{iface}" -c"{config}"'
+  DHCP_CMD = "dhcpcd --noarp {iface}"
+
   interface = "wlan0"
+
   def __init__(self):
-    self.encrypted = False
-    self.config_map = { k : value for (k, value) in zip(self.SSIDS, self.configs) }
+    self.config_map = ConfigParser()
+    self.config_map.read(os.path.join(os.path.dirname(__file__), "config"))
+    self.SSIDS = self.config_map.sections()
     self.reset_state()
 
   def reset_state(self):
+    self.encrypted = False
     self.connected = None
     self.better = self.SSIDS
 
   def get_visible_ssids(self):
-    os.system("ip link set %s up" % self.interface)
-    scan_out = os.popen(self.SCAN_CMD).read()
-    print scan_out
-    ssids = [line.strip().split("SSID: ")[1::2] for line in scan_out.split(os.linesep)]
-    print ssids
-    return [ssid[0] for ssid in ssids if len(ssid)]
+    os.system(self.IF_UP_CMD.format(iface=self.interface))
+    try:
+      scan_out = subprocess.check_output(self.SCAN_CMD.format(iface=self.interface), shell=True).decode('utf-8')
+    except subprocess.CalledProcessError:
+      return []
+
+    ssids = []
+    for line in scan_out.split(os.linesep):
+      splt = line.strip().split("SSID: ")
+      if len(splt) > 1:
+        ssids.append(splt[1].strip())
+
+    return ssids
+
+  def make_wpa_config(self, ssid, password):
+    os.system(self.WPA_CONFIG_CMD.format(ssid=ssid, password=password))
 
   def connect(self, name):
-    print "Trying to connect to %s..." % name
+    print("Trying to connect to %s..." % name)
     if self.connected is not None:
       self.network_off()
 
-    if self.config_map[name] is not None:
+    if 'pass' in self.config_map[name]:
       self.connect_encrypted(name)
     else:
       self.connect_open(name)
 
-    os.system("dhcpcd -L %s" % self.interface)
+    os.system(self.DHCP_CMD.format(iface=self.interface))
 
     self.connected = name
     self.better = self.SSIDS[:self.SSIDS.index(name)]
-    print "Connected to %s." % name
+    print("Connected to %s." % name)
 
   def connect_encrypted(self, name):
-    os.system("wpa_supplicant -B -Dnl80211 -i%s -c/etc/sysconfig/wpa_supplicant-%s.conf" % (self.interface, self.config_map[name]))
+    config = "/etc/sysconfig/wpa-%s.conf" % name
+    if not os.path.exists(config):
+      self.make_wpa_config(name, self.config_map[name]['pass'])
+
+    os.system(self.WPA_CONNECT_CMD.format(iface=self.interface, config=config))
     self.encrypted = True
 
   def connect_open(self, name):
-    os.system("iw %s connect \"%s\"" % (self.interface, name))
+    os.system(self.IW_CONNECT_CMD.format(iface=self.interface, ssid=name))
 
   def network_off(self):
-    print "Killing network."
+    print("Killing network.")
     if self.encrypted:
       os.system("pkill -f wpa_supplicant")
       self.encrypted = False
@@ -63,14 +87,12 @@ class NetMan(object):
 
   def run(self):
     while 1:
-      print "scanning..."
+      print("scanning...")
       visible_ssids = self.get_visible_ssids()
       if self.connected not in visible_ssids:
         candidates = self.SSIDS
       else:
         candidates = self.better
-
-      print visible_ssids
 
       for ssid in candidates:
         if ssid in visible_ssids:
