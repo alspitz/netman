@@ -1,0 +1,9 @@
+[SSID-OPEN]
+
+[SSID-WPA]
+  pass = password1
+
+[SSID-WPA-STATIC-IP]
+  pass = password1
+  ip = 192.168.0.2/24
+  gateway = 192.168.0.1
